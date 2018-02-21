@@ -1,0 +1,80 @@
+#################################################################################
+#!/bin/ksh
+#!/usr/bin/ksh
+#----- Script is created by Nishad Tupe (ITRPM , Reliability Engineer). Output is
+ sent Splunk for dashboards.
+#----- Before making changes to script kindly consult with ITRPM team.
+#----- Mod 1 : Collects the session details blocking/waiting sessions
+#----- Mod 2 : Kills the session holding blocking lock more than 10 minutes.
+#----- Mod 3 : Sends notification to concerned group in case of errors/failures.
+#################################################################################
+#------------------Setting the Environment and Master log variables ---------------#
+ORACLE_BASE=/oracle/app/oracle/
+export ORACLE_BASE
+ORACLE_HOME=/oracle/app/oracle/product/11.2.0
+export ORACLE_HOME
+export PATH=$ORACLE_HOME/bin:$PATH
+ORACLE_SID=$1
+export ORACLE_SID
+ALERT_GROUP="iw267@cummins.com"
+export ALERT_GROUP
+export TIMESTAMP=`date +%Y%m%d_%H%M`
+EDITOR=vi
+export EDITOR
+log_file=/usr/users/appdba/exec/log/Blocking_Master_${TIMESTAMP}_$ORACLE_SID.out
+echo "Blocking sessions for $ORACLE_SID" > $log_file
+date >> $log_file
+sqlplus -s "/" <<EOF  > $log_file
+REM #------------------------ Module 1 Blocking sessions ---------------------------#
+set linesize 500
+set pagesize 0
+set trimspool on
+set feedback off
+select to_char(sysdate, 'yyyy-mm-dd"T"HH24:MM:SS')||' instance_name="'||(select i
+nstance_name from v\$instance)
+|| '" dbuser="' || s.USERNAME || '" osuser="' || s.osuser ||'" module="' || s.mod
+ule || '" sid="'||s.sid
+||'" serial#="'||s.serial#||'" spid="'||p.spid ||'" status="'||s.status||'" servi
+ce_name="'||s.service_name||'" sql_id="'||s.sql_id
+||'" sql_hash_value="'||s.SQL_HASH_VALUE||'" logon_time="'||TO_CHAR(s.logon_Time,
+'DD-MON-YYYY HH24:MI:SS')
+||'" event="'||s.event||'" seconds_in_wait="'||s.SECONDS_IN_WAIT
+||'" wait_class="'||s.wait_class||'"' as output_line
+FROM v\$session s,v\$process p  WHERE s.paddr = p.addr
+and s.sid in (select a.sid from  v\$lock a ,v\$lock b WHERE a.block = 1 AND b.req
+uest > 0 AND a.id1 = b.id1
+AND a.id2 = b.id2 and a.ctime > 600) order by LOGON_TIME;
+spool /usr/users/appdba/exec/log/Blocking_$ORACLE_SID_${TIMESTAMP}.log
+/
+spool off;
+REM #------------------------ Module 2 Blocking locks kill------------------------#
+REM set feedback on
+spool /usr/users/appdba/exec/block_sess_kill.sql
+SELECT ( SELECT 'alter system kill session '||''''||sid||','||serial#||''''||' im
+mediate;'
+FROM v\$session  WHERE sid=a.sid ) FROM v\$lock a, v\$lock b  WHERE a.block = 1 A
+ND b.request > 0
+AND a.id1 = b.id1 AND a.id2 = b.id2 and a.ctime/60 > 10;
+spool off
+REM #----------------------- Module 3 Send Notifications --------------------------#
+set feedback off
+set echo on
+@/usr/users/appdba/exec/block_sess_kill.sql
+exit;
+EOF
+#REM Part 7 Sending the email
+echo "Finished Blocking sessions for $ORACLE_SID " >> $log_file
+date >> $log_file
+#Email appropriate folks only if an error is found
+grep "ORA-" $log_file| grep -Ev 'ORA-00030:|ORA-00031:' > /dev/null
+oerr=$?
+grep "error" $log_file > /dev/null
+gerr=$?
+
+if [ $oerr = 0 -o $gerr = 0 ]
+ then
+mailx -s "$ORACLE_SID Problem with blocking session script" $ALERT_GROUP < $log_f
+ile
+fi
+exit 0
+#------------------------------------End-------------------------------------------#
