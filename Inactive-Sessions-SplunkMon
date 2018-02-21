@@ -1,0 +1,70 @@
+#################################################################################
+#!/bin/ksh
+#!/usr/bin/ksh
+#----- Script is created by Nishad Tupe (ITRPM , Reliability Engineer). Output is
+ sent Splunk for dashboards.
+#----- Before making changes to script kindly consult with ITRPM team.
+#----- Module 1 : Collects the details for session inactive more than last 2 hour
+s , feeds the data to Splunk every one hour.
+#----- Module 2 : Sends notification to concerned group in case of errors/failure
+s.
+#################################################################################
+#------------------Setting the Environment and Master log variables -------------#
+ORACLE_BASE=/oracle/app/oracle/
+export ORACLE_BASE
+ORACLE_HOME=/oracle/app/oracle/product/11.2.0
+export ORACLE_HOME
+export PATH=$ORACLE_HOME/bin:$PATH
+ORACLE_SID=$1
+export ORACLE_SID
+ALERT_GROUP="iw267@cummins.com"
+export ALERT_GROUP
+export TIMESTAMP=`date +%Y%m%d_%H%M`
+EDITOR=vi
+export EDITOR
+log_file=/usr/users/appdba/exec/log/Inactive_Master_${TIMESTAMP}_$ORACLE_SID.out
+echo "Inactive sessions for $ORACLE_SID" > $log_file
+date >> $log_file
+sqlplus -s "/" <<EOF  > $log_file
+REM #----------------------Module 1 Inactive sessions ---------------------------
+-#
+set linesize 500
+set pagesize 00
+set trimspool on
+set feedback off
+select to_char(sysdate, 'yyyy-mm-dd"T"HH24:MM:SS')||'"host_name="'||(select host_
+name from v\$instance)
+||'"instance_name="'||(select instance_name from v\$instance)
+||'"sid="'||s.sid||'"serial#="'||s.serial#|| s.sid||'"spid="'||p.spid||'"dbuser="
+'|| s.username||'"sess_conn_from="'||s.machine
+||'"program="'||s.program||'"module="'||s.module||'"osuser="'||s.osuser
+||'"state="'||s.state||'"logon_time="'||to_char(s.logon_time,'DD-MON-YYYY HH24:MI
+:SS')||'"minutes_inactive="'||round(s.last_call_et/60,2)
+||'"status="'||s.status||'"action="'||s.action
+||'"sql_id="'||s.sql_id||'"sql_hash_value="'||s.sql_hash_value as "INACTIVE_SESSI
+ONS" from v\$session s, v\$process p where
+p.addr=s.paddr and
+s.status='INACTIVE' and s.last_call_et > 7200
+and  s.username not in ('SQLOPER4','SYS','SYSTEM','CUMPAS','SDS_BMS','OGG');
+spool /usr/users/appdba/exec/log/Inactive_$SID_${TIMESTAMP}.log
+/
+spool off
+exit
+EOF
+#----------------------Module 2 Sending the email------------------------#
+echo "Finished Inactive sessions for $ORACLE_SID " >> $log_file
+date >> $log_file
+#Email appropriate folks only if an error is found
+grep "ORA-" $log_file | grep -Ev 'ORA-00030:|ORA-00031:' > /dev/null
+oerr=$?
+grep "error" $log_file > /dev/null
+gerr=$?
+
+if [ $oerr = 0 -o $gerr = 0 ]
+ then
+mailx -s "$ORACLE_SID Problem with inactive session script" $ALERT_GROUP < $log_f
+ile
+fi
+exit 0
+
+#-----------------------------End-----------------------------------------#
